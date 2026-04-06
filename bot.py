@@ -95,23 +95,22 @@ async def play_loop(vc, gid, channel):
             except: pass
             vc.loop.call_soon_threadsafe(done.set)
 
-        try:
-            source = discord.FFmpegOpusAudio(file_path)
-        except:
-            from discord import FFmpegPCMAudio
-            source = FFmpegPCMAudio(file_path)
+        # FFmpeg options chuẩn
+        source = discord.FFmpegOpusAudio(
+            file_path,
+            before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+            options='-vn -loglevel panic'
+        )
 
         vc.play(source, after=after_play)
 
         embed = discord.Embed(title="🎵 Đang phát", description=f"[{title}]({link})", color=0x1DB954)
-        if duration == 0:
-            embed.add_field(name="⏱", value="LIVE STREAM", inline=True)
-        else:
-            embed.add_field(name="⏱ Duration", value=format_duration(duration), inline=True)
+        embed.add_field(name="⏱ Duration" if duration else "⏱", value=format_duration(duration) if duration else "LIVE STREAM", inline=True)
         embed.add_field(name="Progress", value="▬"*25+"🔘", inline=False)
         
         msg = await channel.send(embed=embed)
         update_embeds[gid] = msg
+
         start = asyncio.get_event_loop().time()
         progress_task = asyncio.create_task(update_progress_embed(gid, duration, start))
 
@@ -120,7 +119,7 @@ async def play_loop(vc, gid, channel):
 
         mode = get_loop_mode(gid)
         if mode == "song":
-            continue  # giữ nguyên queue[0]
+            continue
         elif mode == "queue":
             queue.append(queue.pop(0))
         else:
@@ -134,7 +133,6 @@ async def play(ctx, *, query: str):
         return await ctx.respond("❌ Bạn phải vào voice trước", ephemeral=True)
     
     await ctx.defer()
-    
     vc = ctx.guild.voice_client
     if not vc:
         vc = await ctx.author.voice.channel.connect()
@@ -143,7 +141,7 @@ async def play(ctx, *, query: str):
         file_path, title, link, duration = await fetch_tempfile(query)
     except Exception as e:
         return await ctx.followup.send(f"❌ Lỗi lấy nhạc: {e}")
-    
+
     queue = get_queue(ctx.guild.id)
     queue.append((file_path, title, link, duration))
 
@@ -151,11 +149,12 @@ async def play(ctx, *, query: str):
     embed.add_field(name="Duration", value=format_duration(duration))
     await ctx.followup.send(embed=embed)
 
-    # Nếu bot chưa phát nhạc, start play_loop
-    if not vc.is_playing() and not vc.is_paused():
-        # Kiểm tra xem đã có task đang chạy chưa
-        if not hasattr(vc, 'play_task') or vc.play_task.done():
-            vc.play_task = asyncio.create_task(play_loop(vc, ctx.guild.id, ctx.channel))
+    # Khởi chạy play_loop nếu chưa chạy
+    if not hasattr(bot, "play_tasks"):
+        bot.play_tasks = {}
+    
+    if ctx.guild.id not in bot.play_tasks or bot.play_tasks[ctx.guild.id].done():
+        bot.play_tasks[ctx.guild.id] = asyncio.create_task(play_loop(vc, ctx.guild.id, ctx.channel))
 
 @bot.slash_command(name="queue", description="Xem queue")
 async def queue_cmd(ctx):
