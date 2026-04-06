@@ -27,13 +27,13 @@ def set_loop_mode(guild_id, mode):
 
 # ---------- YouTube fetch ----------
 async def fetch_youtube(query):
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'noplaylist': True,
-        'quiet': True,
-        'default_search': 'ytsearch',
-        'cookiefile': 'cookies.txt',
-        'http_headers': {'User-Agent': 'Mozilla/5.0'}
+   ydl_opts = {
+    'format': 'bestaudio[ext=m4a]/bestaudio/best',  # ưu tiên m4a, nếu không có thì best
+    'noplaylist': True,
+    'quiet': True,
+    'default_search': 'ytsearch',
+    'cookiefile': 'cookies.txt',
+    'http_headers': {'User-Agent': 'Mozilla/5.0'}
     }
 
     loop = asyncio.get_event_loop()
