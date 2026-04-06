@@ -2,7 +2,7 @@
 
 [phases.setup]
 # Chọn phiên bản Python bạn muốn (3.14 là mới nhất hiện tại)
-python = "3.11"
+packages = ["python3.11", "python3.11Packages.pip"]
 
 [phases.build]
 # Các lệnh build
@@ -15,4 +15,4 @@ build_commands = [
 
 [phases.start]
 # Lệnh để chạy bot khi container start
-start_command = "python bot.py"
+start_command = " bot.py"
