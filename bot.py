@@ -11,16 +11,17 @@ import random
 intents = discord.Intents.all()
 bot = discord.Bot(intents=intents)
 
-queues = {}
-loop_mode = {}
-update_embeds = {}
+# ---------- GLOBAL STATE ----------
+queues = {}        # {guild_id: [(file_path, title, link, duration)]}
+loop_mode = {}     # {guild_id: "none"/"song"/"queue"}
+update_embeds = {} # {guild_id: message embed}
 
 def get_queue(gid): return queues.setdefault(gid, [])
 def get_loop_mode(gid): return loop_mode.get(gid, "none")
 def set_loop_mode(gid, mode): loop_mode[gid] = mode
 def format_duration(sec): return str(timedelta(seconds=int(sec)))
 
-# ---------- Fetch + Opus convert ----------
+# ---------- fetch + convert to opus ----------
 async def fetch_tempfile(query):
     loop = asyncio.get_event_loop()
     temp_file = tempfile.NamedTemporaryFile(suffix=".opus", dir="/tmp", delete=False)
@@ -94,12 +95,13 @@ async def update_progress(gid,duration,start):
         vc = msg.guild.voice_client
         if not vc or not vc.is_playing(): break
         elapsed = int(asyncio.get_event_loop().time()-start)
-        embed = make_embed(msg.embeds[0].title, msg.embeds[0].description, elapsed, duration, get_loop_mode(msg.guild.id))
+        mode = get_loop_mode(msg.guild.id)
+        embed = make_embed(msg.embeds[0].title, msg.embeds[0].description, elapsed, duration, mode)
         try: await msg.edit(embed=embed)
         except: break
         await asyncio.sleep(1)
 
-# ---------- Play loop ----------
+# ---------- Play Loop ----------
 async def play_loop(vc,gid,channel):
     queue = get_queue(gid)
     while queue:
@@ -109,7 +111,7 @@ async def play_loop(vc,gid,channel):
             try: os.remove(file_path)
             except: pass
             vc.loop.call_soon_threadsafe(done.set)
-        source = discord.FFmpegOpusAudio(file_path, before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5", options="-vn")
+        source = discord.FFmpegOpusAudio(file_path)
         vc.play(source, after=after_play)
 
         view = MusicControlView(gid)
