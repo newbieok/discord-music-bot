@@ -1,19 +1,19 @@
 import discord
 from discord import Option
-from discord.ext import commands
+from discord.ext import commands, tasks
 import yt_dlp
 import asyncio
-import random
-import os
 import tempfile
+import os
 import re
+import random
+from datetime import timedelta
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="/", intents=intents)
 
 queues = {}       # {guild_id: [song1, song2,...]}
 loop_mode = {}    # {guild_id: "none"/"song"/"queue"}
-
 SHORTS_REGEX = re.compile(r'(https?://)?(www\.)?youtube\.com/shorts/(\w+)')
 
 # ---------- Helpers ----------
@@ -28,8 +28,11 @@ def get_loop_mode(guild_id):
 def set_loop_mode(guild_id, mode):
     loop_mode[guild_id] = mode
 
+def format_duration(seconds: int):
+    return str(timedelta(seconds=int(seconds)))
+
+# ---------- Fetch + download audio ----------
 async def fetch_tempfile(query):
-    # Detect Shorts
     match = SHORTS_REGEX.match(query)
     if match:
         video_id = match.group(3)
@@ -41,8 +44,6 @@ async def fetch_tempfile(query):
         'quiet': True,
         'default_search': 'ytsearch',
         'http_headers': {'User-Agent': 'Mozilla/5.0'},
-        # Fallback cho SoundCloud
-        'source_address': '0.0.0.0',
     }
 
     loop = asyncio.get_event_loop()
@@ -62,7 +63,7 @@ async def fetch_tempfile(query):
                 ydl.download([info['webpage_url']])
                 return info
         except Exception:
-            # Fallback SoundCloud
+            # fallback scsearch
             ydl_opts['default_search'] = 'scsearch'
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(query, download=False)
@@ -72,18 +73,16 @@ async def fetch_tempfile(query):
                 return info
 
     info = await loop.run_in_executor(None, run)
-    return temp_file.name, info['title'], info['webpage_url']
+    return temp_file.name, info['title'], info['webpage_url'], info.get('duration', 0)
 
 # ---------- Play loop ----------
 async def play_loop(vc, guild_id, channel):
     queue = get_queue(guild_id)
     while queue:
-        song = queue[0]
-        file_path, title, link = song
-
+        file_path, title, link, duration = queue[0]
         done = asyncio.Event()
 
-        def after_play(error):
+        def after_playing(error):
             try:
                 if os.path.exists(file_path):
                     os.remove(file_path)
@@ -92,9 +91,15 @@ async def play_loop(vc, guild_id, channel):
             vc.loop.call_soon_threadsafe(done.set)
 
         source = discord.FFmpegOpusAudio(file_path)
-        vc.play(source, after=after_play)
-        embed = discord.Embed(title="🎵 Đang phát", description=f"[{title}]({link})", color=0x1DB954)
-        asyncio.create_task(channel.send(embed=embed))
+        vc.play(source, after=after_playing)
+
+        # Embed với progress bar
+        bar_length = 20
+        progress_embed = discord.Embed(title="🎵 Đang phát", description=f"[{title}]({link})", color=0x1DB954)
+        progress_embed.add_field(name="⏱ Duration", value=format_duration(duration), inline=True)
+        progress_bar = "▬" * bar_length + "🔘"
+        progress_embed.add_field(name="Progress", value=progress_bar, inline=False)
+        await channel.send(embed=progress_embed)
 
         await done.wait()
 
@@ -118,12 +123,13 @@ async def play(ctx, *, query: str):
 
     queue = get_queue(ctx.guild.id)
     try:
-        file_path, title, link = await fetch_tempfile(query)
+        file_path, title, link, duration = await fetch_tempfile(query)
     except Exception as e:
         return await ctx.followup.send(f"❌ Lỗi lấy nhạc: {e}")
 
-    queue.append((file_path, title, link))
+    queue.append((file_path, title, link, duration))
     embed = discord.Embed(title="➕ Đã thêm vào queue", description=f"[{title}]({link})", color=0x1DB954)
+    embed.add_field(name="Duration", value=format_duration(duration))
     await ctx.followup.send(embed=embed)
 
     if not vc.is_playing() and not vc.is_paused():
@@ -135,8 +141,8 @@ async def queue_cmd(ctx):
     if not queue:
         return await ctx.respond("📭 Queue trống")
     embed = discord.Embed(title="📜 Queue", color=0x1DB954)
-    for i, (_, title, link) in enumerate(queue, start=1):
-        embed.add_field(name=f"{i}. {title}", value=link, inline=False)
+    for i, (_, title, link, duration) in enumerate(queue, start=1):
+        embed.add_field(name=f"{i}. {title}", value=f"{link} | ⏱ {format_duration(duration)}", inline=False)
     await ctx.respond(embed=embed)
 
 @bot.slash_command(name="shuffle", description="Xáo trộn queue")
@@ -169,7 +175,7 @@ async def skip(ctx):
 async def stop(ctx):
     vc = ctx.guild.voice_client
     queue = get_queue(ctx.guild.id)
-    for f, _, _ in queue:
+    for f, _, _, _ in queue:
         try:
             if os.path.exists(f):
                 os.remove(f)
@@ -180,7 +186,6 @@ async def stop(ctx):
         vc.stop()
     await ctx.respond("⏹️ Đã dừng nhạc và xoá queue")
 
-# ---------- Join/Leave ----------
 @bot.slash_command(name="join", description="Vào voice channel")
 async def join(ctx):
     if not ctx.author.voice or not ctx.author.voice.channel:
@@ -196,7 +201,7 @@ async def join(ctx):
 async def leave(ctx):
     vc = ctx.guild.voice_client
     queue = get_queue(ctx.guild.id)
-    for f, _, _ in queue:
+    for f, _, _, _ in queue:
         try:
             if os.path.exists(f):
                 os.remove(f)
@@ -207,6 +212,24 @@ async def leave(ctx):
         vc.stop()
         await vc.disconnect()
     await ctx.respond("👋 Bot đã rời voice và xoá queue")
+
+@bot.slash_command(name="pause", description="Tạm dừng bài đang phát")
+async def pause(ctx):
+    vc = ctx.guild.voice_client
+    if vc and vc.is_playing():
+        vc.pause()
+        await ctx.respond("⏸️ Đã pause")
+    else:
+        await ctx.respond("❌ Không có bài đang phát")
+
+@bot.slash_command(name="resume", description="Tiếp tục bài đang pause")
+async def resume(ctx):
+    vc = ctx.guild.voice_client
+    if vc and vc.is_paused():
+        vc.resume()
+        await ctx.respond("▶️ Đã resume")
+    else:
+        await ctx.respond("❌ Không có bài đang pause")
 
 @bot.slash_command(name="ping", description="Test bot")
 async def ping(ctx):
