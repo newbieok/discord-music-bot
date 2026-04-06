@@ -117,52 +117,74 @@ async def update_progress(gid,duration,start):
         await asyncio.sleep(1)
 
 # ---------- Play loop ----------
-async def play_loop(vc,gid,channel):
-    queue=get_queue(gid)
+async def play_loop(vc, gid, channel):
+    queue = get_queue(gid)
     while queue:
-        file_path,title,link,duration=queue[0]
-        done=asyncio.Event()
+        file_path, title, link, duration = queue[0]
+
+        done = asyncio.Event()
         def after_play(error):
             try: os.remove(file_path)
             except: pass
             vc.loop.call_soon_threadsafe(done.set)
 
-        source=discord.FFmpegOpusAudio(file_path,before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',options='-vn')
-        vc.play(source,after=after_play)
+        # Tạo audio source từ file tạm
+        source = discord.FFmpegOpusAudio(
+            file_path,
+            before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+            options='-vn'
+        )
+        vc.play(source, after=after_play)
 
-        start=asyncio.get_event_loop().time()
-        mode=get_loop_mode(gid)
-        view=MusicControlView(gid)
-        msg=await channel.send(embed=make_embed(title,link,0,duration,mode),view=view)
-        update_embeds[gid]=msg
-        progress_task=asyncio.create_task(update_progress(gid,duration,start))
+        # Embed + buttons Spotify-style
+        view = MusicControlView(gid)
+        start_time = asyncio.get_event_loop().time()
+        msg = await channel.send(embed=make_embed(title, link, 0, duration, get_loop_mode(gid)), view=view)
+        update_embeds[gid] = msg
+
+        # Update progress bar realtime
+        progress_task = asyncio.create_task(update_progress(gid, duration, start_time))
 
         await done.wait()
         progress_task.cancel()
 
-        mode=get_loop_mode(gid)
-        if mode=="song": continue
-        elif mode=="queue": queue.append(queue.pop(0))
+        # Loop mode handling
+        mode = get_loop_mode(gid)
+        if mode == "song": continue
+        elif mode == "queue": queue.append(queue.pop(0))
         else: queue.pop(0)
-        update_embeds.pop(gid,None)
+
+        update_embeds.pop(gid, None)
 
 # ---------- Commands ----------
-@bot.slash_command(name="play",description="Phát nhạc YouTube")
-async def play(ctx,*,query:str):
+@bot.slash_command(name="play", description="Phát nhạc YouTube với embed + progress + buttons")
+async def play(ctx, *, query: str):
+    # Kiểm tra user đang ở voice
     if not ctx.author.voice or not ctx.author.voice.channel:
-        return await ctx.respond("❌ Bạn phải vào voice",ephemeral=True)
+        return await ctx.respond("❌ Bạn phải vào voice channel trước", ephemeral=True)
+
     await ctx.defer()
-    vc=ctx.guild.voice_client
-    if not vc: vc=await ctx.author.voice.channel.connect()
+    channel = ctx.author.voice.channel
+    vc = ctx.guild.voice_client
+    if not vc:
+        vc = await channel.connect()
+
+    # Fetch nhạc về file tạm
     try:
-        file_path,title,link,duration=await fetch_tempfile(query)
+        file_path, title, link, duration = await fetch_tempfile(query)
     except Exception as e:
-        return await ctx.followup.send(f"❌ Lỗi: {e}")
-    queue=get_queue(ctx.guild.id)
-    queue.append((file_path,title,link,duration))
+        return await ctx.followup.send(f"❌ Lỗi khi lấy nhạc: {e}")
+
+    # Thêm vào queue
+    queue = get_queue(ctx.guild.id)
+    queue.append((file_path, title, link, duration))
     await ctx.followup.send(f"➕ [{title}]({link}) vào queue | Queue: {len(queue)} bài")
+
+    # Nếu bot chưa chơi bài nào, start play loop
     if not vc.is_playing() and not vc.is_paused():
-        asyncio.create_task(play_loop(vc,ctx.guild.id,ctx.channel))
+        asyncio.create_task(play_loop(vc, ctx.guild.id, ctx.channel))
+    elif vc.is_paused():
+        vc.resume()
 
 @bot.slash_command(name="join",description="Vào voice")
 async def join(ctx):
