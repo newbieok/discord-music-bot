@@ -4,13 +4,14 @@ import yt_dlp
 import asyncio
 import random
 import os
+import tempfile
 
 # ---------- Bot setup ----------
 intents = discord.Intents.all()
 bot = discord.Bot(intents=intents)
 
 # ---------- Global state ----------
-queues = {}      # {guild_id: [(url, title, link, thumbnail), ...]}
+queues = {}      # {guild_id: [(file_path, title, link), ...]}
 loop_mode = {}   # {guild_id: "none"/"song"/"queue"}
 
 def get_queue(guild_id):
@@ -24,65 +25,51 @@ def get_loop_mode(guild_id):
 def set_loop_mode(guild_id, mode):
     loop_mode[guild_id] = mode
 
-# ---------- YouTube fetch (bền hơn) ----------
-async def fetch_youtube(query):
+# ---------- Fetch and download audio temporarily ----------
+async def fetch_youtube_tempfile(query):
     ydl_opts = {
         'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
         'noplaylist': True,
         'quiet': True,
         'default_search': 'ytsearch',
         'cookiefile': 'cookies.txt',
-        'http_headers': {'User-Agent': 'Mozilla/5.0'}
+        'http_headers': {'User-Agent': 'Mozilla/5.0'},
     }
 
     loop = asyncio.get_event_loop()
+    temp_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
 
     def run():
+        ydl_opts['outtmpl'] = temp_file.name
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            try:
-                info = ydl.extract_info(query, download=False)
-                if 'entries' in info:
-                    info = info['entries'][0]
-                return info
-            except yt_dlp.utils.DownloadError as e:
-                raise RuntimeError(f"yt_dlp error: {e}")
+            info = ydl.extract_info(query, download=True)
+            if 'entries' in info:
+                info = info['entries'][0]
+            return info
 
     info = await loop.run_in_executor(None, run)
-
-    return (
-        info['url'],           # streamable URL
-        info['title'],
-        info['webpage_url'],
-        info.get('thumbnail')
-    )
+    return temp_file.name, info['title'], info['webpage_url']
 
 # ---------- Play loop ----------
 async def play_loop(vc, guild_id, channel):
-    ffmpeg_path = "ffmpeg"
     queue = get_queue(guild_id)
 
     while queue:
-        url, title, link, thumbnail = queue[0]
-
-        try:
-            source = await discord.FFmpegOpusAudio.from_probe(
-                url,
-                executable=ffmpeg_path,
-                before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-                options='-vn'
-            )
-        except Exception as e:
-            await channel.send(f"❌ Lỗi phát: {e}")
-            queue.pop(0)
-            continue
+        file_path, title, link = queue[0]
 
         done = asyncio.Event()
 
         def after_playing(error):
+            # xóa file tạm sau khi phát
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+            except:
+                pass
             vc.loop.call_soon_threadsafe(done.set)
 
+        source = discord.FFmpegOpusAudio(file_path)
         vc.play(source, after=after_playing)
-
         await channel.send(f"🎶 Đang phát: [{title}]({link})")
 
         await done.wait()
@@ -111,15 +98,18 @@ async def play(ctx, query: str):
     queue = get_queue(ctx.guild.id)
 
     try:
-        url, title, link, thumbnail = await fetch_youtube(query)
+        file_path, title, link = await fetch_youtube_tempfile(query)
     except Exception as e:
         return await ctx.followup.send(f"❌ Lỗi lấy nhạc: {e}")
 
     # Chặn trùng
     if any(link == t[2] for t in queue):
+        # xóa file tạm nếu trùng
+        if os.path.exists(file_path):
+            os.remove(file_path)
         return await ctx.followup.send("⚠️ Bài này đã có trong queue")
 
-    queue.append((url, title, link, thumbnail))
+    queue.append((file_path, title, link))
     await ctx.followup.send(f"➕ [{title}]({link}) vào queue")
 
     # Nếu chưa phát thì start loop
@@ -144,8 +134,18 @@ async def leave(ctx):
     await ctx.defer()
     vc = ctx.guild.voice_client
     if vc:
+        vc.stop()
+        # xóa tất cả file tạm còn trong queue
+        queue = get_queue(ctx.guild.id)
+        for f, _, _ in queue:
+            try:
+                if os.path.exists(f):
+                    os.remove(f)
+            except:
+                pass
+        queue.clear()
         await vc.disconnect()
-        await ctx.followup.send("👋 Đã rời voice")
+        await ctx.followup.send("👋 Đã rời voice và xoá queue")
     else:
         await ctx.followup.send("❌ Bot chưa vào voice")
 
@@ -156,7 +156,13 @@ async def skip(ctx):
     if vc and vc.is_playing():
         vc.stop()
         if queue:
-            queue.pop(0)
+            # xóa file tạm của bài đang skip
+            f, _, _ = queue.pop(0)
+            try:
+                if os.path.exists(f):
+                    os.remove(f)
+            except:
+                pass
         await ctx.respond("⏭️ Đã skip")
     else:
         await ctx.respond("❌ Không có bài đang phát")
