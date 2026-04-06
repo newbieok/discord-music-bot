@@ -32,22 +32,21 @@ async def fetch_youtube(query):
         'noplaylist': True,
         'quiet': True,
         'default_search': 'ytsearch',
-
         'cookiefile': 'cookies.txt',
-
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0'
-        }
+        'http_headers': {'User-Agent': 'Mozilla/5.0'}
     }
 
     loop = asyncio.get_event_loop()
 
     def run():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(query, download=False)
-            if 'entries' in info:
-                info = info['entries'][0]
-            return info
+            try:
+                info = ydl.extract_info(query, download=False)
+                if 'entries' in info:  # search result
+                    info = info['entries'][0]
+                return info
+            except Exception as e:
+                raise RuntimeError(f"yt_dlp error: {e}")
 
     info = await loop.run_in_executor(None, run)
 
@@ -121,6 +120,13 @@ async def play(ctx, query: str):
     if not ctx.author.voice:
         return await ctx.respond("❌ Bạn phải vào voice trước")
 
+    @bot.slash_command(name="play", description="Phát nhạc")
+async def play(ctx, query: str):
+    if not ctx.author.voice:
+        return await ctx.respond("❌ Bạn phải vào voice trước", ephemeral=True)
+
+    await ctx.defer()  # ⬅ báo Discord bot đang xử lý
+
     vc = ctx.guild.voice_client
     if not vc:
         vc = await ctx.author.voice.channel.connect()
@@ -130,17 +136,16 @@ async def play(ctx, query: str):
     try:
         url, title, link, thumbnail = await fetch_youtube(query)
     except Exception as e:
-        return await ctx.respond(f"❌ Lỗi lấy nhạc: {e}")
+        return await ctx.followup.send(f"❌ Lỗi lấy nhạc: {e}")
 
-    # ❌ chặn trùng
+    # chặn trùng
     if any(link == t[2] for t in queue):
-        return await ctx.respond("⚠️ Bài này đã có trong queue")
+        return await ctx.followup.send("⚠️ Bài này đã có trong queue")
 
     queue.append((url, title, link, thumbnail))
+    await ctx.followup.send(f"➕ [{title}]({link}) vào queue")
 
-    await ctx.respond(f"➕ [{title}]({link}) vào queue")
-
-    # 🔥 KEY: nếu chưa phát thì start loop
+    # nếu chưa phát thì start loop
     if not vc.is_playing() and not vc.is_paused():
         asyncio.create_task(play_loop(vc, ctx.guild.id, ctx.channel))
 
