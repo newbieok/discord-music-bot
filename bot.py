@@ -3,6 +3,7 @@ from discord import Option
 import yt_dlp
 import asyncio
 import random
+import os
 
 # ---------- Bot setup ----------
 intents = discord.Intents.all()
