@@ -9,31 +9,36 @@ import re
 from datetime import timedelta
 import random
 
+# ---------- Bot setup ----------
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="/", intents=intents)
 
-queues = {}       # guild_id: [(file_path, title, link, duration)]
-loop_mode = {}    # guild_id: "none"/"song"/"queue"
+# ---------- Globals ----------
+queues = {}        # guild_id: [(file_path, title, link, duration)]
+loop_mode = {}     # guild_id: "none"/"song"/"queue"
 update_embeds = {} # guild_id: embed message
 SHORTS_REGEX = re.compile(r'(https?://)?(www\.)?youtube\.com/shorts/(\w+)')
 
+# ---------- Helper functions ----------
 def get_queue(gid): return queues.setdefault(gid, [])
 def get_loop_mode(gid): return loop_mode.get(gid, "none")
 def set_loop_mode(gid, mode): loop_mode[gid] = mode
 def format_duration(sec): return str(timedelta(seconds=int(sec)))
 
-# ---------- fetch audio ----------
+# ---------- Fetch audio ----------
 async def fetch_tempfile(query):
     match = SHORTS_REGEX.match(query)
     if match:
         query = f"https://www.youtube.com/watch?v={match.group(3)}"
+
     ydl_opts = {
-        'format':'bestaudio/best',
+        'format': 'bestaudio/best',
         'noplaylist': True,
         'quiet': True,
         'default_search': 'ytsearch',
         'http_headers': {'User-Agent':'Mozilla/5.0'},
     }
+
     loop = asyncio.get_event_loop()
     temp_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
 
@@ -48,70 +53,81 @@ async def fetch_tempfile(query):
                 ydl.download([info['webpage_url']])
                 return info
         except Exception:
-            # fallback SoundCloud
             ydl_opts['default_search'] = 'scsearch'
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(query, download=False)
                 if 'entries' in info: info = info['entries'][0]
                 ydl.download([info['webpage_url']])
                 return info
-    info = await loop.run_in_executor(None, run)
-    return temp_file.name, info['title'], info['webpage_url'], info.get('duration',0)
 
-# ---------- progress bar ----------
-async def update_progress_embed(gid,duration,start):
+    info = await loop.run_in_executor(None, run)
+    return temp_file.name, info['title'], info['webpage_url'], info.get('duration', 0)
+
+# ---------- Embed helper ----------
+def make_now_playing_embed(title, link, elapsed, duration, mode):
+    color = 0x1DB954
+    embed = discord.Embed(title="🎵 Now Playing", description=f"[{title}]({link})", color=color)
+    loop_emoji = {"none":"❌","song":"🔂","queue":"🔁"}.get(mode,"❌")
+    embed.set_footer(text=f"Loop: {loop_emoji}")
+
+    bar_len = 25
+    if duration == 0:
+        bar = "🔴 LIVE STREAM"
+        embed.add_field(name="⏱", value="LIVE STREAM", inline=True)
+        embed.add_field(name="Progress", value=bar, inline=False)
+    else:
+        if elapsed > duration: elapsed = duration
+        filled = int(bar_len * elapsed / max(duration,1))
+        bar = "▬"*filled + "🔘" + "▬"*(bar_len-filled)
+        embed.add_field(name="⏱", value=f"{format_duration(elapsed)} / {format_duration(duration)}", inline=True)
+        embed.add_field(name="Progress", value=bar, inline=False)
+    return embed
+
+# ---------- Progress updater ----------
+async def update_progress_embed(gid, duration, start):
     msg = update_embeds.get(gid)
     if not msg: return
-    bar_len = 25
     while True:
         vc = msg.guild.voice_client
         if not vc or not vc.is_playing(): break
         elapsed = int(asyncio.get_event_loop().time() - start)
-        if duration==0: # live
-            bar="🔴 LIVE"
-            embed=discord.Embed(title="🎵 Đang phát", description=msg.embeds[0].description, color=0x1DB954)
-            embed.add_field(name="⏱", value="LIVE STREAM", inline=True)
-            embed.add_field(name="Progress", value=bar, inline=False)
-        else:
-            if elapsed>duration: elapsed=duration
-            filled=int(bar_len*elapsed/max(duration,1))
-            bar="▬"*filled+"🔘"+"▬"*(bar_len-filled)
-            embed=discord.Embed(title="🎵 Đang phát", description=msg.embeds[0].description, color=0x1DB954)
-            embed.add_field(name="⏱ Duration", value=f"{format_duration(elapsed)} / {format_duration(duration)}", inline=True)
-            embed.add_field(name="Progress", value=bar, inline=False)
+        mode = get_loop_mode(msg.guild.id)
+        embed = make_now_playing_embed(msg.embeds[0].description[1:], msg.embeds[0].description, elapsed, duration, mode)
         try: await msg.edit(embed=embed)
         except: break
         await asyncio.sleep(1)
 
-# ---------- play loop ----------
+# ---------- Play loop ----------
 async def play_loop(vc, gid, channel):
     queue = get_queue(gid)
     while queue:
         file_path, title, link, duration = queue[0]
         done = asyncio.Event()
 
-        def after_play(e):
+        def after_play(error):
             try: os.remove(file_path)
             except: pass
+            if error:
+                print(f"⚠️ Error playing {title}: {error}")
             vc.loop.call_soon_threadsafe(done.set)
 
-        # FFmpeg options chuẩn
-        source = discord.FFmpegOpusAudio(
-            file_path,
-            before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-            options='-vn -loglevel panic'
-        )
+        try:
+            source = discord.FFmpegOpusAudio(
+                file_path,
+                before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+                options='-vn -loglevel panic'
+            )
+        except Exception as e:
+            print(f"⚠️ FFmpeg error: {e}")
+            queue.pop(0)
+            continue
 
         vc.play(source, after=after_play)
 
-        embed = discord.Embed(title="🎵 Đang phát", description=f"[{title}]({link})", color=0x1DB954)
-        embed.add_field(name="⏱ Duration" if duration else "⏱", value=format_duration(duration) if duration else "LIVE STREAM", inline=True)
-        embed.add_field(name="Progress", value="▬"*25+"🔘", inline=False)
-        
-        msg = await channel.send(embed=embed)
-        update_embeds[gid] = msg
-
         start = asyncio.get_event_loop().time()
+        mode = get_loop_mode(gid)
+        msg = await channel.send(embed=make_now_playing_embed(title, link, 0, duration, mode))
+        update_embeds[gid] = msg
         progress_task = asyncio.create_task(update_progress_embed(gid, duration, start))
 
         await done.wait()
@@ -126,17 +142,16 @@ async def play_loop(vc, gid, channel):
             queue.pop(0)
         update_embeds.pop(gid, None)
 
-# ---------- /play ----------
+# ---------- Slash commands ----------
+
 @bot.slash_command(name="play", description="Phát nhạc")
 async def play(ctx, *, query: str):
     if not ctx.author.voice or not ctx.author.voice.channel:
         return await ctx.respond("❌ Bạn phải vào voice trước", ephemeral=True)
-    
     await ctx.defer()
     vc = ctx.guild.voice_client
     if not vc:
         vc = await ctx.author.voice.channel.connect()
-    
     try:
         file_path, title, link, duration = await fetch_tempfile(query)
     except Exception as e:
@@ -149,10 +164,8 @@ async def play(ctx, *, query: str):
     embed.add_field(name="Duration", value=format_duration(duration))
     await ctx.followup.send(embed=embed)
 
-    # Khởi chạy play_loop nếu chưa chạy
     if not hasattr(bot, "play_tasks"):
         bot.play_tasks = {}
-    
     if ctx.guild.id not in bot.play_tasks or bot.play_tasks[ctx.guild.id].done():
         bot.play_tasks[ctx.guild.id] = asyncio.create_task(play_loop(vc, ctx.guild.id, ctx.channel))
 
@@ -168,7 +181,6 @@ async def queue_cmd(ctx):
 @bot.slash_command(name="skip", description="Bỏ qua bài")
 async def skip(ctx):
     vc = ctx.guild.voice_client
-    queue = get_queue(ctx.guild.id)
     if vc and vc.is_playing():
         vc.stop()
         await ctx.respond("⏭️ Bài đã skip")
@@ -248,4 +260,5 @@ async def ping(ctx):
 async def on_ready():
     print(f"✅ Bot online: {bot.user} | Guilds: {len(bot.guilds)}")
 
+# ---------- Run bot ----------
 bot.run(os.getenv("TOKEN"))
