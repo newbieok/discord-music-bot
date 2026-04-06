@@ -26,14 +26,12 @@ def set_loop_mode(guild_id, mode):
 # ---------- Fetch + download audio tạm ----------
 async def fetch_youtube_tempfile(query):
     ydl_opts = {
-        'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+        'format': 'bestaudio/best',  # tự chọn audio tốt nhất
         'noplaylist': True,
         'quiet': True,
         'default_search': 'ytsearch',
         'cookiefile': 'cookies.txt',
         'http_headers': {'User-Agent': 'Mozilla/5.0'},
-        # ⚡ Sử dụng JS runtime để tránh lỗi định dạng
-        'js': True
     }
 
     loop = asyncio.get_event_loop()
@@ -43,7 +41,7 @@ async def fetch_youtube_tempfile(query):
         ydl_opts['outtmpl'] = temp_file.name
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(query, download=True)
-            if 'entries' in info:
+            if 'entries' in info:  # nếu là search result
                 info = info['entries'][0]
             return info
 
