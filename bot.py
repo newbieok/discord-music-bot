@@ -89,50 +89,73 @@ async def play_loop(vc, gid, channel):
     while queue:
         file_path, title, link, duration = queue[0]
         done = asyncio.Event()
+
         def after_play(e):
             try: os.remove(file_path)
             except: pass
             vc.loop.call_soon_threadsafe(done.set)
+
         try:
-            source=discord.FFmpegOpusAudio(file_path)
+            source = discord.FFmpegOpusAudio(file_path)
         except:
             from discord import FFmpegPCMAudio
-            source=FFmpegPCMAudio(file_path)
+            source = FFmpegPCMAudio(file_path)
+
         vc.play(source, after=after_play)
-        embed=discord.Embed(title="🎵 Đang phát", description=f"[{title}]({link})", color=0x1DB954)
-        if duration==0: embed.add_field(name="⏱", value="LIVE STREAM", inline=True)
-        else: embed.add_field(name="⏱ Duration", value=format_duration(duration), inline=True)
+
+        embed = discord.Embed(title="🎵 Đang phát", description=f"[{title}]({link})", color=0x1DB954)
+        if duration == 0:
+            embed.add_field(name="⏱", value="LIVE STREAM", inline=True)
+        else:
+            embed.add_field(name="⏱ Duration", value=format_duration(duration), inline=True)
         embed.add_field(name="Progress", value="▬"*25+"🔘", inline=False)
-        msg=await channel.send(embed=embed)
-        update_embeds[gid]=msg
-        start=asyncio.get_event_loop().time()
-        asyncio.create_task(update_progress_embed(gid,duration,start))
+        
+        msg = await channel.send(embed=embed)
+        update_embeds[gid] = msg
+        start = asyncio.get_event_loop().time()
+        progress_task = asyncio.create_task(update_progress_embed(gid, duration, start))
+
         await done.wait()
-        mode=get_loop_mode(gid)
-        if mode=="song": continue
-        elif mode=="queue": queue.append(queue.pop(0))
-        else: queue.pop(0)
-        update_embeds.pop(gid,None)
+        progress_task.cancel()
+
+        mode = get_loop_mode(gid)
+        if mode == "song":
+            continue  # giữ nguyên queue[0]
+        elif mode == "queue":
+            queue.append(queue.pop(0))
+        else:
+            queue.pop(0)
+        update_embeds.pop(gid, None)
 
 # ---------- /play ----------
-@bot.slash_command(name="play",description="Phát nhạc")
-async def play(ctx, *, query:str):
+@bot.slash_command(name="play", description="Phát nhạc")
+async def play(ctx, *, query: str):
     if not ctx.author.voice or not ctx.author.voice.channel:
         return await ctx.respond("❌ Bạn phải vào voice trước", ephemeral=True)
+    
     await ctx.defer()
-    vc=ctx.guild.voice_client
-    if not vc: vc=await ctx.author.voice.channel.connect()
+    
+    vc = ctx.guild.voice_client
+    if not vc:
+        vc = await ctx.author.voice.channel.connect()
+    
     try:
-        file_path,title,link,duration=await fetch_tempfile(query)
+        file_path, title, link, duration = await fetch_tempfile(query)
     except Exception as e:
         return await ctx.followup.send(f"❌ Lỗi lấy nhạc: {e}")
-    queue=get_queue(ctx.guild.id)
-    queue.append((file_path,title,link,duration))
-    embed=discord.Embed(title="➕ Đã thêm vào queue", description=f"[{title}]({link})", color=0x1DB954)
+    
+    queue = get_queue(ctx.guild.id)
+    queue.append((file_path, title, link, duration))
+
+    embed = discord.Embed(title="➕ Đã thêm vào queue", description=f"[{title}]({link})", color=0x1DB954)
     embed.add_field(name="Duration", value=format_duration(duration))
     await ctx.followup.send(embed=embed)
+
+    # Nếu bot chưa phát nhạc, start play_loop
     if not vc.is_playing() and not vc.is_paused():
-        asyncio.create_task(play_loop(vc,ctx.guild.id,ctx.channel))
+        # Kiểm tra xem đã có task đang chạy chưa
+        if not hasattr(vc, 'play_task') or vc.play_task.done():
+            vc.play_task = asyncio.create_task(play_loop(vc, ctx.guild.id, ctx.channel))
 
 @bot.slash_command(name="queue", description="Xem queue")
 async def queue_cmd(ctx):
