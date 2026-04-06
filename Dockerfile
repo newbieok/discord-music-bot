@@ -1,15 +1,17 @@
 FROM python:3.11-slim
 
+# Set workdir
 WORKDIR /app
 
+# Copy files
 COPY . /app
 
-RUN apt-get update && apt-get install -y ffmpeg \
-    && pip install --upgrade pip \
-    && pip install -r requirements.txt \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+# Upgrade pip & install deps
+RUN pip install --upgrade pip
+RUN pip install -r requirements.txt
 
-# Temp folder for audio
+# Create temp folder for music
 RUN mkdir -p /tmp/music
 
+# Run bot
 CMD ["python", "bot.py"]
