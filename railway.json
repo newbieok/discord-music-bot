@@ -7,3 +7,6 @@
     "startCommand": "python3 bot.py"
   }
 }
+apt update
+apt install -y ffmpeg libopus0 libopus-dev build-essential python3-dev libsodium-dev
+pip install py-cord[voice] yt-dlp
