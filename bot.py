@@ -88,18 +88,26 @@ class MusicControlView(View):
         await interaction.response.send_message(f"🔁 Loop mode: {new_mode}", ephemeral=True)
 
 # ---------- Progress updater ----------
-async def update_progress(gid,duration,start):
+async def update_progress(gid, duration):
     msg = update_embeds.get(gid)
     if not msg: return
-    while True:
-        vc = msg.guild.voice_client
-        if not vc or not vc.is_playing(): break
-        elapsed = int(asyncio.get_event_loop().time()-start)
-        mode = get_loop_mode(msg.guild.id)
-        embed = make_embed(msg.embeds[0].title, msg.embeds[0].description, elapsed, duration, mode)
-        try: await msg.edit(embed=embed)
-        except: break
-        await asyncio.sleep(1)
+    vc = msg.guild.voice_client
+    while vc and vc.is_playing():
+        if duration == 0:
+            # live stream
+            embed = make_embed(msg.embeds[0].title, msg.embeds[0].description, 0, 0, get_loop_mode(msg.guild.id))
+        else:
+            try:
+                # lấy position thực tế
+                elapsed = int(vc.source._player._position)  # hoặc vc.source.timestamp, tùy Py-cord version
+            except:
+                elapsed = 0
+            embed = make_embed(msg.embeds[0].title, msg.embeds[0].description, elapsed, duration, get_loop_mode(msg.guild.id))
+        try:
+            await msg.edit(embed=embed)
+        except:
+            break
+        await asyncio.sleep(0.5)  # update 2 lần/s cho mượt
 
 # ---------- Play Loop ----------
 async def play_loop(vc,gid,channel):
@@ -115,10 +123,8 @@ async def play_loop(vc,gid,channel):
         vc.play(source, after=after_play)
 
         view = MusicControlView(gid)
-        start = asyncio.get_event_loop().time()
-        msg = await channel.send(embed=make_embed(title, link, 0, duration, get_loop_mode(gid)), view=view)
-        update_embeds[gid] = msg
-        task = asyncio.create_task(update_progress(gid, duration, start))
+        start = None  # bỏ start
+        task = asyncio.create_task(update_progress(gid, duration))
         await done.wait()
         task.cancel()
 
