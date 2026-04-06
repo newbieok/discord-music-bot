@@ -98,8 +98,8 @@ async def update_progress(gid, duration):
             embed = make_embed(msg.embeds[0].title, msg.embeds[0].description, 0, 0, get_loop_mode(msg.guild.id))
         else:
             try:
-                # lấy position thực tế
-                elapsed = int(vc.source._player._position)  # hoặc vc.source.timestamp, tùy Py-cord version
+                # lấy thời gian phát thực
+                elapsed = int(vc.source._player._position)  # chính xác với FFmpeg
             except:
                 elapsed = 0
             embed = make_embed(msg.embeds[0].title, msg.embeds[0].description, elapsed, duration, get_loop_mode(msg.guild.id))
@@ -107,7 +107,7 @@ async def update_progress(gid, duration):
             await msg.edit(embed=embed)
         except:
             break
-        await asyncio.sleep(0.5)  # update 2 lần/s cho mượt
+        await asyncio.sleep(0.5)  # 2 lần/s → mượt
 
 # ---------- Play Loop ----------
 async def play_loop(vc,gid,channel):
@@ -160,11 +160,33 @@ async def pause(ctx):
     if vc and vc.is_playing(): vc.pause()
     await ctx.respond("⏸️ Pause")
 
-@bot.slash_command(name="resume", description="Tiếp tục")
+# ---------- RESUME cải tiến ----------
+@bot.slash_command(name="resume", description="Tiếp tục bài đang pause")
 async def resume(ctx):
     vc = ctx.guild.voice_client
-    if vc and vc.is_paused(): vc.resume()
-    await ctx.respond("▶️ Resume")
+    queue = get_queue(ctx.guild.id)
+
+    if vc and vc.is_paused():
+        vc.resume()
+        # Gửi embed gợi ý bài tiếp theo
+        next_song = queue[1] if len(queue) > 1 else None
+        current_song = queue[0] if queue else None
+
+        if current_song:
+            file_path, title, link, duration = current_song
+            embed = discord.Embed(title="▶️ Resume", description=f"Đang tiếp tục bài hiện tại:\n[{title}]({link})", color=0x1DB954)
+            if next_song:
+                embed.add_field(name="Next Up", value=f"[{next_song[1]}]({next_song[2]})", inline=False)
+            else:
+                embed.add_field(name="Next Up", value="Không còn bài tiếp theo", inline=False)
+        else:
+            embed = discord.Embed(title="▶️ Resume", description="Không có bài đang phát", color=0x1DB954)
+
+        # Thêm view Spotify-style
+        view = MusicControlView(ctx.guild.id)
+        await ctx.respond(embed=embed, view=view)
+    else:
+        await ctx.respond("❌ Không có bài đang pause")
 
 @bot.slash_command(name="skip", description="Bỏ qua bài")
 async def skip(ctx):
