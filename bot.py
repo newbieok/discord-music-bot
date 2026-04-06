@@ -1,6 +1,6 @@
 import discord
 from discord import Option
-from discord.ext import commands
+from discord.ui import View, Button
 import yt_dlp
 import asyncio
 import tempfile
@@ -9,17 +9,15 @@ import re
 from datetime import timedelta
 import random
 
-# ---------- Bot setup ----------
 intents = discord.Intents.all()
-bot = commands.Bot(command_prefix="/", intents=intents)
+bot = discord.Bot(intents=intents)
 
-# ---------- Globals ----------
+# ---------- Global state ----------
 queues = {}        # guild_id: [(file_path, title, link, duration)]
 loop_mode = {}     # guild_id: "none"/"song"/"queue"
 update_embeds = {} # guild_id: embed message
 SHORTS_REGEX = re.compile(r'(https?://)?(www\.)?youtube\.com/shorts/(\w+)')
 
-# ---------- Helper functions ----------
 def get_queue(gid): return queues.setdefault(gid, [])
 def get_loop_mode(gid): return loop_mode.get(gid, "none")
 def set_loop_mode(gid, mode): loop_mode[gid] = mode
@@ -31,14 +29,7 @@ async def fetch_tempfile(query):
     if match:
         query = f"https://www.youtube.com/watch?v={match.group(3)}"
 
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'noplaylist': True,
-        'quiet': True,
-        'default_search': 'ytsearch',
-        'http_headers': {'User-Agent':'Mozilla/5.0'},
-    }
-
+    ydl_opts = {'format': 'bestaudio/best', 'noplaylist': True, 'quiet': True, 'default_search': 'ytsearch'}
     loop = asyncio.get_event_loop()
     temp_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
 
@@ -48,8 +39,6 @@ async def fetch_tempfile(query):
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(query, download=False)
                 if 'entries' in info: info = info['entries'][0]
-                audio = [f for f in info.get('formats',[]) if f['acodec'] != 'none']
-                if not audio: raise ValueError("❌ Không có audio hợp lệ")
                 ydl.download([info['webpage_url']])
                 return info
         except Exception:
@@ -64,9 +53,9 @@ async def fetch_tempfile(query):
     return temp_file.name, info['title'], info['webpage_url'], info.get('duration', 0)
 
 # ---------- Embed helper ----------
-def make_now_playing_embed(title, link, elapsed, duration, mode):
-    color = 0x1DB954
-    embed = discord.Embed(title="🎵 Now Playing", description=f"[{title}]({link})", color=color)
+def make_now_playing_embed(title, link, elapsed, duration, mode, thumbnail=None):
+    embed = discord.Embed(title="🎵 Now Playing", description=f"[{title}]({link})", color=0x1DB954)
+    if thumbnail: embed.set_thumbnail(url=thumbnail)
     loop_emoji = {"none":"❌","song":"🔂","queue":"🔁"}.get(mode,"❌")
     embed.set_footer(text=f"Loop: {loop_emoji}")
 
@@ -82,6 +71,46 @@ def make_now_playing_embed(title, link, elapsed, duration, mode):
         embed.add_field(name="⏱", value=f"{format_duration(elapsed)} / {format_duration(duration)}", inline=True)
         embed.add_field(name="Progress", value=bar, inline=False)
     return embed
+
+# ---------- Button View ----------
+class MusicControlView(View):
+    def __init__(self, guild_id):
+        super().__init__(timeout=None)
+        self.guild_id = guild_id
+
+    @discord.ui.button(label="⏭️ Skip", style=discord.ButtonStyle.green)
+    async def skip(self, button: Button, interaction: discord.Interaction):
+        vc = interaction.guild.voice_client
+        if vc and vc.is_playing():
+            vc.stop()
+            await interaction.response.send_message("⏭️ Skip bài", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Không có bài đang phát", ephemeral=True)
+
+    @discord.ui.button(label="⏸️ Pause", style=discord.ButtonStyle.blurple)
+    async def pause(self, button: Button, interaction: discord.Interaction):
+        vc = interaction.guild.voice_client
+        if vc and vc.is_playing():
+            vc.pause()
+            await interaction.response.send_message("⏸️ Pause", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Không có bài đang phát", ephemeral=True)
+
+    @discord.ui.button(label="▶️ Resume", style=discord.ButtonStyle.green)
+    async def resume(self, button: Button, interaction: discord.Interaction):
+        vc = interaction.guild.voice_client
+        if vc and vc.is_paused():
+            vc.resume()
+            await interaction.response.send_message("▶️ Resume", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Không có bài đang pause", ephemeral=True)
+
+    @discord.ui.button(label="🔁 Loop", style=discord.ButtonStyle.gray)
+    async def loop(self, button: Button, interaction: discord.Interaction):
+        mode = get_loop_mode(self.guild_id)
+        new_mode = {"none":"song", "song":"queue", "queue":"none"}[mode]
+        set_loop_mode(self.guild_id, new_mode)
+        await interaction.response.send_message(f"🔁 Loop mode: {new_mode}", ephemeral=True)
 
 # ---------- Progress updater ----------
 async def update_progress_embed(gid, duration, start):
@@ -107,26 +136,20 @@ async def play_loop(vc, gid, channel):
         def after_play(error):
             try: os.remove(file_path)
             except: pass
-            if error:
-                print(f"⚠️ Error playing {title}: {error}")
             vc.loop.call_soon_threadsafe(done.set)
 
-        try:
-            source = discord.FFmpegOpusAudio(
-                file_path,
-                before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-                options='-vn -loglevel panic'
-            )
-        except Exception as e:
-            print(f"⚠️ FFmpeg error: {e}")
-            queue.pop(0)
-            continue
+        source = discord.FFmpegOpusAudio(
+            file_path,
+            before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+            options='-vn'
+        )
 
         vc.play(source, after=after_play)
 
         start = asyncio.get_event_loop().time()
         mode = get_loop_mode(gid)
-        msg = await channel.send(embed=make_now_playing_embed(title, link, 0, duration, mode))
+        view = MusicControlView(gid)
+        msg = await channel.send(embed=make_now_playing_embed(title, link, 0, duration, mode), view=view)
         update_embeds[gid] = msg
         progress_task = asyncio.create_task(update_progress_embed(gid, duration, start))
 
@@ -134,71 +157,30 @@ async def play_loop(vc, gid, channel):
         progress_task.cancel()
 
         mode = get_loop_mode(gid)
-        if mode == "song":
-            continue
-        elif mode == "queue":
-            queue.append(queue.pop(0))
-        else:
-            queue.pop(0)
+        if mode == "song": continue
+        elif mode == "queue": queue.append(queue.pop(0))
+        else: queue.pop(0)
         update_embeds.pop(gid, None)
 
 # ---------- Slash commands ----------
-
-@bot.slash_command(name="play", description="Phát nhạc")
-async def play(ctx, *, query: str):
+@bot.slash_command(name="play", description="Phát nhạc YouTube")
+async def play(ctx, *, query:str):
     if not ctx.author.voice or not ctx.author.voice.channel:
         return await ctx.respond("❌ Bạn phải vào voice trước", ephemeral=True)
     await ctx.defer()
     vc = ctx.guild.voice_client
-    if not vc:
-        vc = await ctx.author.voice.channel.connect()
+    if not vc: vc = await ctx.author.voice.channel.connect()
     try:
-        file_path, title, link, duration = await fetch_tempfile(query)
+        file_path,title,link,duration = await fetch_tempfile(query)
     except Exception as e:
-        return await ctx.followup.send(f"❌ Lỗi lấy nhạc: {e}")
+        return await ctx.followup.send(f"❌ Lỗi: {e}")
+    queue=get_queue(ctx.guild.id)
+    queue.append((file_path,title,link,duration))
+    await ctx.followup.send(f"➕ [{title}]({link}) vào queue | Queue: {len(queue)} bài")
+    if not vc.is_playing() and not vc.is_paused():
+        asyncio.create_task(play_loop(vc, ctx.guild.id, ctx.channel))
 
-    queue = get_queue(ctx.guild.id)
-    queue.append((file_path, title, link, duration))
-
-    embed = discord.Embed(title="➕ Đã thêm vào queue", description=f"[{title}]({link})", color=0x1DB954)
-    embed.add_field(name="Duration", value=format_duration(duration))
-    await ctx.followup.send(embed=embed)
-
-    if not hasattr(bot, "play_tasks"):
-        bot.play_tasks = {}
-    if ctx.guild.id not in bot.play_tasks or bot.play_tasks[ctx.guild.id].done():
-        bot.play_tasks[ctx.guild.id] = asyncio.create_task(play_loop(vc, ctx.guild.id, ctx.channel))
-
-@bot.slash_command(name="queue", description="Xem queue")
-async def queue_cmd(ctx):
-    queue = get_queue(ctx.guild.id)
-    if not queue: return await ctx.respond("📭 Queue trống")
-    embed = discord.Embed(title="📜 Queue", color=0x1DB954)
-    for i, (_, title, link, duration) in enumerate(queue, 1):
-        embed.add_field(name=f"{i}. {title}", value=f"{link} | ⏱ {format_duration(duration)}", inline=False)
-    await ctx.respond(embed=embed)
-
-@bot.slash_command(name="skip", description="Bỏ qua bài")
-async def skip(ctx):
-    vc = ctx.guild.voice_client
-    if vc and vc.is_playing():
-        vc.stop()
-        await ctx.respond("⏭️ Bài đã skip")
-    else:
-        await ctx.respond("❌ Không có bài đang phát")
-
-@bot.slash_command(name="stop", description="Dừng nhạc và xoá queue")
-async def stop(ctx):
-    vc = ctx.guild.voice_client
-    queue = get_queue(ctx.guild.id)
-    for f, _, _, _ in queue:
-        try: os.remove(f)
-        except: pass
-    queue.clear()
-    if vc: vc.stop()
-    await ctx.respond("⏹️ Đã dừng nhạc và xoá queue")
-
-@bot.slash_command(name="join", description="Vào voice channel")
+@bot.slash_command(name="join", description="Vào voice")
 async def join(ctx):
     if not ctx.author.voice or not ctx.author.voice.channel:
         return await ctx.respond("❌ Bạn phải vào voice trước", ephemeral=True)
@@ -210,55 +192,71 @@ async def join(ctx):
 @bot.slash_command(name="leave", description="Rời voice")
 async def leave(ctx):
     vc = ctx.guild.voice_client
-    queue = get_queue(ctx.guild.id)
-    for f, _, _, _ in queue:
+    queue=get_queue(ctx.guild.id)
+    for f,_,_,_ in queue:
         try: os.remove(f)
         except: pass
     queue.clear()
     if vc:
         vc.stop()
         await vc.disconnect()
-    await ctx.respond("👋 Bot đã rời voice và xoá queue")
+    await ctx.respond("👋 Rời voice và xoá queue")
+
+@bot.slash_command(name="skip", description="Bỏ qua bài")
+async def skip(ctx):
+    vc = ctx.guild.voice_client
+    if vc and vc.is_playing(): vc.stop()
+    await ctx.respond("⏭️ Skip")
 
 @bot.slash_command(name="pause", description="Tạm dừng")
 async def pause(ctx):
     vc = ctx.guild.voice_client
-    if vc and vc.is_playing():
-        vc.pause()
-        await ctx.respond("⏸️ Đã pause")
-    else:
-        await ctx.respond("❌ Không có bài đang phát")
+    if vc and vc.is_playing(): vc.pause()
+    await ctx.respond("⏸️ Pause")
 
 @bot.slash_command(name="resume", description="Tiếp tục")
 async def resume(ctx):
     vc = ctx.guild.voice_client
-    if vc and vc.is_paused():
-        vc.resume()
-        await ctx.respond("▶️ Đã resume")
-    else:
-        await ctx.respond("❌ Không có bài đang pause")
+    if vc and vc.is_paused(): vc.resume()
+    await ctx.respond("▶️ Resume")
+
+@bot.slash_command(name="stop", description="Dừng nhạc + xoá queue")
+async def stop(ctx):
+    vc = ctx.guild.voice_client
+    queue=get_queue(ctx.guild.id)
+    for f,_,_,_ in queue:
+        try: os.remove(f)
+        except: pass
+    queue.clear()
+    if vc: vc.stop()
+    await ctx.respond("⏹️ Dừng nhạc + xoá queue")
+
+@bot.slash_command(name="queue", description="Xem queue")
+async def queue_cmd(ctx):
+    queue = get_queue(ctx.guild.id)
+    if not queue: return await ctx.respond("📭 Queue trống")
+    msg="\n".join([f"{i+1}. [{t[1]}]({t[2]})" for i,t in enumerate(queue)])
+    await ctx.respond(f"📜 Queue:\n{msg}")
+
+@bot.slash_command(name="loop", description="Loop song/queue/none")
+async def loop_cmd(ctx, mode: Option(str, "none/song/queue")):
+    mode=mode.lower()
+    if mode not in ["none","song","queue"]: return await ctx.respond("❌ Chọn: none/song/queue")
+    set_loop_mode(ctx.guild.id, mode)
+    await ctx.respond(f"🔁 Loop mode: {mode}")
 
 @bot.slash_command(name="shuffle", description="Xáo trộn queue")
 async def shuffle_cmd(ctx):
     queue = get_queue(ctx.guild.id)
     if not queue: return await ctx.respond("❌ Queue trống")
     random.shuffle(queue)
-    await ctx.respond("🔀 Queue đã được shuffle")
-
-@bot.slash_command(name="loop", description="Loop song / queue / none")
-async def loop_cmd(ctx, mode: Option(str, "none/song/queue")):
-    mode = mode.lower()
-    if mode not in ["none","song","queue"]: return await ctx.respond("❌ Chọn: none / song / queue")
-    set_loop_mode(ctx.guild.id, mode)
-    await ctx.respond(f"🔁 Loop mode: {mode}")
+    await ctx.respond("🔀 Queue đã shuffle")
 
 @bot.slash_command(name="ping", description="Test bot")
-async def ping(ctx):
-    await ctx.respond("🏓 Pong")
+async def ping(ctx): await ctx.respond("🏓 Pong")
 
 @bot.event
 async def on_ready():
     print(f"✅ Bot online: {bot.user} | Guilds: {len(bot.guilds)}")
 
-# ---------- Run bot ----------
 bot.run(os.getenv("TOKEN"))
