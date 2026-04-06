@@ -1,3 +1,18 @@
+# nixpacks.toml - Bot Discord + voice + yt-dlp
+
 [phases.setup]
-# python311Full có pip sẵn
-nixPkgs = ["python311Full", "ffmpeg", "nodejs_20"]
+# Chọn phiên bản Python bạn muốn (3.14 là mới nhất hiện tại)
+python = "3.11"
+
+[phases.build]
+# Các lệnh build
+build_commands = [
+  # Cập nhật pip
+  "python -m pip install --upgrade pip",
+  # Cài thư viện từ requirements.txt
+  "python -m pip install -r requirements.txt"
+]
+
+[phases.start]
+# Lệnh để chạy bot khi container start
+start_command = "python bot.py"
