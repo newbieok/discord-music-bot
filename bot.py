@@ -116,7 +116,7 @@ async def join(ctx):
 
     await ctx.followup.send(f"✅ Bot đã vào {ctx.author.voice.channel.name}")
 
-@slash_command(name="play", description="Phát nhạc")
+@bot.slash_command(name="play", description="Phát nhạc")
 async def play(ctx, query: str):
     if not ctx.author.voice:
         return await ctx.respond("❌ Bạn phải vào voice trước")
@@ -154,7 +154,7 @@ async def leave(ctx):
     else:
         await ctx.followup.send("❌ Bot chưa vào voice")
 
-@slash_command(name="skip", description="Bỏ qua bài")
+@bot.slash_command(name="skip", description="Bỏ qua bài")
 async def skip(ctx):
     vc = ctx.guild.voice_client
     queue = get_queue(ctx.guild.id)
