@@ -7,21 +7,34 @@ import tempfile
 import os
 from datetime import timedelta
 import random
+import time
 
 TOKEN = os.getenv("TOKEN")
-TEMP_DIR = "/tmp/music"
+TEMP_DIR = os.getenv("TEMP_DIR", "/tmp/music")
 
 intents = discord.Intents.all()
 bot = discord.Bot(intents=intents)
 
 queues = {}        # guild_id -> [(file_path,title,link,duration)]
 loop_mode = {}     # guild_id -> "none"/"song"/"queue"
-update_embeds = {} # guild_id -> embed message
+update_embeds = {} # guild_id -> message embed
 
 def get_queue(gid): return queues.setdefault(gid, [])
 def get_loop_mode(gid): return loop_mode.get(gid, "none")
 def set_loop_mode(gid, mode): loop_mode[gid]=mode
 def format_duration(sec): return str(timedelta(seconds=int(sec)))
+
+# ---------- cleanup temp folder ----------
+async def cleanup_temp():
+    while True:
+        now = time.time()
+        for f in os.listdir(TEMP_DIR):
+            fp = os.path.join(TEMP_DIR,f)
+            try:
+                if os.path.isfile(fp) and now - os.path.getmtime(fp) > 3600:  # older than 1h
+                    os.remove(fp)
+            except: pass
+        await asyncio.sleep(300)
 
 # ---------- fetch + convert to opus ----------
 async def fetch_tempfile(query):
@@ -43,7 +56,6 @@ async def fetch_tempfile(query):
             info = ydl.extract_info(query, download=False)
             if 'entries' in info: info=info['entries'][0]
             ydl.download([info['webpage_url']])
-            # Convert to opus
             file_path = temp_file.name
             os.system(f'ffmpeg -i "{temp_file.name}.{info["ext"]}" -c:a libopus -b:a 128k -y "{file_path}"')
             try: os.remove(f'{temp_file.name}.{info["ext"]}')
@@ -92,11 +104,9 @@ class MusicControlView(View):
         vc = interaction.guild.voice_client
         if vc and vc.is_paused(): vc.resume()
         await interaction.response.send_message("▶️ Resume", ephemeral=True)
-        # Gợi ý bài tiếp theo
         queue = get_queue(interaction.guild.id)
         if len(queue)>1:
-            next_title = queue[1][1]
-            await interaction.followup.send(f"🎶 Bài tiếp theo: {next_title}", ephemeral=True)
+            await interaction.followup.send(f"🎶 Bài tiếp theo: {queue[1][1]}", ephemeral=True)
 
     @discord.ui.button(label="🔁 Loop", style=ButtonStyle.gray)
     async def loop(self, button, interaction):
@@ -142,7 +152,7 @@ async def play_loop(vc,gid,channel):
         else: queue.pop(0)
         update_embeds.pop(gid,None)
 
-# ---------- COMMANDS ----------
+# ---------- Commands ----------
 @bot.slash_command(name="play", description="Phát nhạc")
 async def play(ctx, *, query:str):
     if not ctx.author.voice or not ctx.author.voice.channel:
@@ -162,11 +172,7 @@ async def play(ctx, *, query:str):
     elif vc.is_paused():
         vc.resume()
 
-# Các command khác: pause, resume, skip, stop, queue, shuffle, loop, join, leave giữ nguyên logic cũ
-# ...
-
 @bot.event
 async def on_ready():
     print(f"✅ Bot online: {bot.user} | Guilds: {len(bot.guilds)}")
-
-bot.run(TOKEN)
+    asyncio.create_task(cleanup_temp())
