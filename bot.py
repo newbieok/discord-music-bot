@@ -6,11 +6,9 @@ import random
 import os
 import tempfile
 
-# ---------- Bot setup ----------
 intents = discord.Intents.all()
 bot = discord.Bot(intents=intents)
 
-# ---------- Global state ----------
 queues = {}      # {guild_id: [(file_path, title, link), ...]}
 loop_mode = {}   # {guild_id: "none"/"song"/"queue"}
 
@@ -25,7 +23,7 @@ def get_loop_mode(guild_id):
 def set_loop_mode(guild_id, mode):
     loop_mode[guild_id] = mode
 
-# ---------- Fetch and download audio temporarily ----------
+# ---------- Fetch + download audio tạm ----------
 async def fetch_youtube_tempfile(query):
     ydl_opts = {
         'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
@@ -34,6 +32,8 @@ async def fetch_youtube_tempfile(query):
         'default_search': 'ytsearch',
         'cookiefile': 'cookies.txt',
         'http_headers': {'User-Agent': 'Mozilla/5.0'},
+        # ⚡ Sử dụng JS runtime để tránh lỗi định dạng
+        'js': True
     }
 
     loop = asyncio.get_event_loop()
@@ -60,7 +60,6 @@ async def play_loop(vc, guild_id, channel):
         done = asyncio.Event()
 
         def after_playing(error):
-            # xóa file tạm sau khi phát
             try:
                 if os.path.exists(file_path):
                     os.remove(file_path)
@@ -74,7 +73,6 @@ async def play_loop(vc, guild_id, channel):
 
         await done.wait()
 
-        # Xử lý loop mode
         mode = get_loop_mode(guild_id)
         if mode == "song":
             continue
@@ -88,20 +86,17 @@ async def play_loop(vc, guild_id, channel):
 async def play(ctx, query: str):
     if not ctx.author.voice or not ctx.author.voice.channel:
         return await ctx.respond("❌ Bạn phải vào voice trước", ephemeral=True)
-
     await ctx.defer()
     vc = ctx.guild.voice_client
     if not vc:
         vc = await ctx.author.voice.channel.connect()
 
     queue = get_queue(ctx.guild.id)
-
     try:
         file_path, title, link = await fetch_youtube_tempfile(query)
     except Exception as e:
         return await ctx.followup.send(f"❌ Lỗi lấy nhạc: {e}")
 
-    # Chặn trùng
     if any(link == t[2] for t in queue):
         if os.path.exists(file_path):
             os.remove(file_path)
@@ -112,54 +107,6 @@ async def play(ctx, query: str):
 
     if not vc.is_playing() and not vc.is_paused():
         asyncio.create_task(play_loop(vc, ctx.guild.id, ctx.channel))
-
-@bot.slash_command(name="join", description="Vào voice channel")
-async def join(ctx):
-    if not ctx.author.voice or not ctx.author.voice.channel:
-        return await ctx.respond("❌ Bạn phải vào voice trước", ephemeral=True)
-    await ctx.defer()
-    vc = ctx.guild.voice_client
-    if vc:
-        await vc.move_to(ctx.author.voice.channel)
-    else:
-        vc = await ctx.author.voice.channel.connect()
-    await ctx.followup.send(f"✅ Bot đã vào {ctx.author.voice.channel.name}")
-
-@bot.slash_command(name="leave", description="Rời voice")
-async def leave(ctx):
-    await ctx.defer()
-    vc = ctx.guild.voice_client
-    queue = get_queue(ctx.guild.id)
-    for f, _, _ in queue:
-        try:
-            if os.path.exists(f):
-                os.remove(f)
-        except:
-            pass
-    queue.clear()
-    if vc:
-        vc.stop()
-        await vc.disconnect()
-        await ctx.followup.send("👋 Đã rời voice và xoá queue")
-    else:
-        await ctx.followup.send("❌ Bot chưa vào voice")
-
-@bot.slash_command(name="skip", description="Bỏ qua bài")
-async def skip(ctx):
-    vc = ctx.guild.voice_client
-    queue = get_queue(ctx.guild.id)
-    if vc and vc.is_playing():
-        vc.stop()
-        if queue:
-            f, _, _ = queue.pop(0)
-            try:
-                if os.path.exists(f):
-                    os.remove(f)
-            except:
-                pass
-        await ctx.respond("⏭️ Đã skip")
-    else:
-        await ctx.respond("❌ Không có bài đang phát")
 
 @bot.slash_command(name="pause", description="Tạm dừng bài đang phát")
 async def pause(ctx):
@@ -194,6 +141,23 @@ async def stop(ctx):
         vc.stop()
     await ctx.respond("⏹️ Đã dừng tất cả nhạc và xoá queue")
 
+@bot.slash_command(name="skip", description="Bỏ qua bài")
+async def skip(ctx):
+    vc = ctx.guild.voice_client
+    queue = get_queue(ctx.guild.id)
+    if vc and vc.is_playing():
+        vc.stop()
+        if queue:
+            f, _, _ = queue.pop(0)
+            try:
+                if os.path.exists(f):
+                    os.remove(f)
+            except:
+                pass
+        await ctx.respond("⏭️ Đã skip")
+    else:
+        await ctx.respond("❌ Không có bài đang phát")
+
 @bot.slash_command(name="queue", description="Xem danh sách nhạc")
 async def queue_cmd(ctx):
     queue = get_queue(ctx.guild.id)
@@ -220,14 +184,43 @@ async def loop_cmd(ctx, mode: Option(str, "none / song / queue")):
     set_loop_mode(ctx.guild.id, mode)
     await ctx.respond(f"🔁 Loop mode set: {mode}")
 
+@bot.slash_command(name="join", description="Vào voice channel")
+async def join(ctx):
+    if not ctx.author.voice or not ctx.author.voice.channel:
+        return await ctx.respond("❌ Bạn phải vào voice trước", ephemeral=True)
+    await ctx.defer()
+    vc = ctx.guild.voice_client
+    if vc:
+        await vc.move_to(ctx.author.voice.channel)
+    else:
+        vc = await ctx.author.voice.channel.connect()
+    await ctx.followup.send(f"✅ Bot đã vào {ctx.author.voice.channel.name}")
+
+@bot.slash_command(name="leave", description="Rời voice")
+async def leave(ctx):
+    await ctx.defer()
+    vc = ctx.guild.voice_client
+    queue = get_queue(ctx.guild.id)
+    for f, _, _ in queue:
+        try:
+            if os.path.exists(f):
+                os.remove(f)
+        except:
+            pass
+    queue.clear()
+    if vc:
+        vc.stop()
+        await vc.disconnect()
+        await ctx.followup.send("👋 Đã rời voice và xoá queue")
+    else:
+        await ctx.followup.send("❌ Bot chưa vào voice")
+
 @bot.slash_command(name="ping", description="Test bot")
 async def ping(ctx):
     await ctx.respond("🏓 Pong")
 
-# ---------- Bot events ----------
 @bot.event
 async def on_ready():
     print(f"✅ Bot online: {bot.user} | Guilds: {len(bot.guilds)}")
 
-# ---------- Run bot ----------
 bot.run(os.getenv("TOKEN"))
