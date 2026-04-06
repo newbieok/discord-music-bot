@@ -1,0 +1,15 @@
+version: "3.9"
+
+services:
+  bot:
+    build: .
+    container_name: discord_music_bot
+    environment:
+      - TOKEN=${TOKEN}      # Bot token
+      - TEMP_DIR=/tmp/music  # temp folder
+    volumes:
+      - music_tmp:/tmp/music
+    restart: unless-stopped
+
+volumes:
+  music_tmp:
