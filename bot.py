@@ -70,7 +70,7 @@ async def play_loop(vc, guild_id, channel):
 
         source = discord.FFmpegOpusAudio(file_path)
         vc.play(source, after=after_playing)
-        await channel.send(f"🎶 Đang phát: [{title}]({link})")
+        asyncio.create_task(channel.send(f"🎶 Đang phát: [{title}]({link})"))
 
         await done.wait()
 
@@ -83,14 +83,13 @@ async def play_loop(vc, guild_id, channel):
         else:
             queue.pop(0)
 
-# ---------- Slash command /play ----------
+# ---------- Slash commands ----------
 @bot.slash_command(name="play", description="Phát nhạc")
 async def play(ctx, query: str):
     if not ctx.author.voice or not ctx.author.voice.channel:
         return await ctx.respond("❌ Bạn phải vào voice trước", ephemeral=True)
 
-    await ctx.defer()  # báo Discord bot đang xử lý
-
+    await ctx.defer()
     vc = ctx.guild.voice_client
     if not vc:
         vc = await ctx.author.voice.channel.connect()
@@ -104,7 +103,6 @@ async def play(ctx, query: str):
 
     # Chặn trùng
     if any(link == t[2] for t in queue):
-        # xóa file tạm nếu trùng
         if os.path.exists(file_path):
             os.remove(file_path)
         return await ctx.followup.send("⚠️ Bài này đã có trong queue")
@@ -112,11 +110,9 @@ async def play(ctx, query: str):
     queue.append((file_path, title, link))
     await ctx.followup.send(f"➕ [{title}]({link}) vào queue")
 
-    # Nếu chưa phát thì start loop
     if not vc.is_playing() and not vc.is_paused():
         asyncio.create_task(play_loop(vc, ctx.guild.id, ctx.channel))
 
-# ---------- Các command cơ bản khác ----------
 @bot.slash_command(name="join", description="Vào voice channel")
 async def join(ctx):
     if not ctx.author.voice or not ctx.author.voice.channel:
@@ -133,17 +129,16 @@ async def join(ctx):
 async def leave(ctx):
     await ctx.defer()
     vc = ctx.guild.voice_client
+    queue = get_queue(ctx.guild.id)
+    for f, _, _ in queue:
+        try:
+            if os.path.exists(f):
+                os.remove(f)
+        except:
+            pass
+    queue.clear()
     if vc:
         vc.stop()
-        # xóa tất cả file tạm còn trong queue
-        queue = get_queue(ctx.guild.id)
-        for f, _, _ in queue:
-            try:
-                if os.path.exists(f):
-                    os.remove(f)
-            except:
-                pass
-        queue.clear()
         await vc.disconnect()
         await ctx.followup.send("👋 Đã rời voice và xoá queue")
     else:
@@ -156,7 +151,6 @@ async def skip(ctx):
     if vc and vc.is_playing():
         vc.stop()
         if queue:
-            # xóa file tạm của bài đang skip
             f, _, _ = queue.pop(0)
             try:
                 if os.path.exists(f):
@@ -167,9 +161,73 @@ async def skip(ctx):
     else:
         await ctx.respond("❌ Không có bài đang phát")
 
+@bot.slash_command(name="pause", description="Tạm dừng bài đang phát")
+async def pause(ctx):
+    vc = ctx.guild.voice_client
+    if vc and vc.is_playing():
+        vc.pause()
+        await ctx.respond("⏸️ Đã pause")
+    else:
+        await ctx.respond("❌ Không có bài đang phát")
+
+@bot.slash_command(name="resume", description="Tiếp tục bài đang pause")
+async def resume(ctx):
+    vc = ctx.guild.voice_client
+    if vc and vc.is_paused():
+        vc.resume()
+        await ctx.respond("▶️ Đã resume")
+    else:
+        await ctx.respond("❌ Không có bài đang pause")
+
+@bot.slash_command(name="stop", description="Dừng nhạc và xoá queue")
+async def stop(ctx):
+    vc = ctx.guild.voice_client
+    queue = get_queue(ctx.guild.id)
+    for f, _, _ in queue:
+        try:
+            if os.path.exists(f):
+                os.remove(f)
+        except:
+            pass
+    queue.clear()
+    if vc:
+        vc.stop()
+    await ctx.respond("⏹️ Đã dừng tất cả nhạc và xoá queue")
+
+@bot.slash_command(name="queue", description="Xem danh sách nhạc")
+async def queue_cmd(ctx):
+    queue = get_queue(ctx.guild.id)
+    if not queue:
+        await ctx.respond("📭 Queue trống")
+    else:
+        msg = "\n".join([f"{i+1}. [{t[1]}]({t[2]})" for i, t in enumerate(queue)])
+        await ctx.respond(f"📜 Queue:\n{msg}")
+
+@bot.slash_command(name="shuffle", description="Xáo trộn queue")
+async def shuffle_cmd(ctx):
+    queue = get_queue(ctx.guild.id)
+    if not queue:
+        await ctx.respond("❌ Queue trống")
+    else:
+        random.shuffle(queue)
+        await ctx.respond("🔀 Queue đã được shuffle")
+
+@bot.slash_command(name="loop", description="Loop bài hiện tại hoặc queue")
+async def loop_cmd(ctx, mode: Option(str, "none / song / queue")):
+    mode = mode.lower()
+    if mode not in ["none", "song", "queue"]:
+        return await ctx.respond("❌ Chọn: none / song / queue")
+    set_loop_mode(ctx.guild.id, mode)
+    await ctx.respond(f"🔁 Loop mode set: {mode}")
+
 @bot.slash_command(name="ping", description="Test bot")
 async def ping(ctx):
     await ctx.respond("🏓 Pong")
+
+# ---------- Bot events ----------
+@bot.event
+async def on_ready():
+    print(f"✅ Bot online: {bot.user} | Guilds: {len(bot.guilds)}")
 
 # ---------- Run bot ----------
 bot.run(os.getenv("TOKEN"))
