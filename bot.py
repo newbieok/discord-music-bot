@@ -37,7 +37,18 @@ async def fetch_youtube(query):
     video_id = info.get('id')
     thumbnail = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg" if video_id else None
     return url, title, link, thumbnail
+    
+ydl_opts = {
+    'format': 'bestaudio/best',
+    'noplaylist': True,
+    'quiet': True,
 
+    'cookiefile': 'cookies.txt',  # 🔥 QUAN TRỌNG
+
+    'http_headers': {
+        'User-Agent': 'Mozilla/5.0'
+    }
+}
 # ---------- Play loop ----------
 async def play_loop(vc, guild_id, channel):
     ffmpeg_path = r"D:\ffmpeg\bin\ffmpeg.exe"
