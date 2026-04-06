@@ -118,14 +118,9 @@ async def join(ctx):
 @bot.slash_command(name="play", description="Phát nhạc")
 async def play(ctx, query: str):
     if not ctx.author.voice:
-        return await ctx.respond("❌ Bạn phải vào voice trước")
-
-    @bot.slash_command(name="play", description="Phát nhạc")
-async def play(ctx, query: str):
-    if not ctx.author.voice:
         return await ctx.respond("❌ Bạn phải vào voice trước", ephemeral=True)
 
-    await ctx.defer()  # ⬅ báo Discord bot đang xử lý
+    await ctx.defer()  # báo Discord bot đang xử lý
 
     vc = ctx.guild.voice_client
     if not vc:
@@ -138,14 +133,12 @@ async def play(ctx, query: str):
     except Exception as e:
         return await ctx.followup.send(f"❌ Lỗi lấy nhạc: {e}")
 
-    # chặn trùng
     if any(link == t[2] for t in queue):
         return await ctx.followup.send("⚠️ Bài này đã có trong queue")
 
     queue.append((url, title, link, thumbnail))
     await ctx.followup.send(f"➕ [{title}]({link}) vào queue")
 
-    # nếu chưa phát thì start loop
     if not vc.is_playing() and not vc.is_paused():
         asyncio.create_task(play_loop(vc, ctx.guild.id, ctx.channel))
 
