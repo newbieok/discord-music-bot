@@ -219,4 +219,4 @@ async def on_ready():
     print("🎵 Slash commands hoạt động bình thường")
 
 # ---------- Run bot ----------
-bot.run(Token)
+bot.run(os.getenv("TOKEN"))
